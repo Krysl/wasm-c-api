@@ -10,11 +10,15 @@
 #include <assert.h>
 
 #ifndef WASM_API_EXTERN
-#if defined(_WIN32) && !defined(__MINGW32__) && !defined(LIBWASM_STATIC)
-#define WASM_API_EXTERN __declspec(dllimport)
-#else
-#define WASM_API_EXTERN
-#endif
+#  if defined(_WIN32) && !defined(__MINGW32__) && !defined(LIBWASM_STATIC)
+#    ifdef WASM_API_EXPORTS
+#      define WASM_API_EXTERN __declspec(dllimport)
+#    else
+#      define WASM_API_EXTERN __declspec(dllexport)
+#    endif
+#  else
+#    define WASM_API_EXTERN
+#  endif
 #endif
 
 #ifdef __cplusplus

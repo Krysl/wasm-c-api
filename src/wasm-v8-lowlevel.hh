@@ -42,6 +42,7 @@ auto memory_type_max(v8::Local<v8::Object> memory) -> uint32_t;
 
 auto module_binary_size(v8::Local<v8::Object> module) -> size_t;
 auto module_binary(v8::Local<v8::Object> module) -> const char*;
+void module_compile(v8::Local<v8::Object> module);
 auto module_serialize_size(v8::Local<v8::Object> module) -> size_t;
 auto module_serialize(v8::Local<v8::Object> module, char*, size_t) -> bool;
 auto module_deserialize(v8::Isolate*, const uint8_t*, size_t, const uint8_t*, size_t) -> v8::MaybeLocal<v8::Object>;

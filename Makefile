@@ -3,24 +3,51 @@
 
 # Change these as you see fit.
 
-V8_VERSION = branch-heads/11.2
+V8_VERSION = branch-heads/12.6 # check v8 version in https://chromiumdash.appspot.com/branches
 V8_ARCH = x64
-V8_MODE = release
+# V8_MODE = release
+V8_MODE = debug
 
 WASM_FLAGS = -DWASM_API_DEBUG  # -DWASM_API_DEBUG_LOG
-V8_FLAGS = -DV8_COMPRESS_POINTERS -DV8_ENABLE_SANDBOX
-C_FLAGS = ${WASM_FLAGS} ${V8_FLAGS} -Wall -Werror -ggdb -O -fsanitize=address
-CC_FLAGS = -std=c++17 ${C_FLAGS}
-LD_FLAGS = -fsanitize-memory-track-origins -fsanitize-memory-use-after-dtor
 
 C_COMP = clang
-
+PYTHON3 = F:/Python/Python3.12-64/python.exe
 WASM_INTERPRETER = ../spec/interpreter/wasm  # Adjust as needed.
+
+CLANG_CL = ${V8_V8}/third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
+LLD_LINK = ${V8_V8}/third_party/llvm-build/Release+Asserts/bin/lld-link.exe
+MSVC = D:/Program Files/Microsoft Visual Studio/2022/Community/VC
+WIN_SDK = C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0
+
+MSVC_INCLUDES = \
+	"-imsvc${MSVC}/Tools/MSVC/14.39.33519/include" \
+	"-imsvc${MSVC}/Tools/MSVC/14.39.33519/ATLMFC/include" \
+	"-imsvc${MSVC}/Auxiliary/VS/include" \
+	"-imsvc${WIN_SDK}/ucrt" \
+	"-imsvc${WIN_SDK}/um" \
+	"-imsvc${WIN_SDK}/shared" \
+	"-imsvc${WIN_SDK}/winrt" \
+	"-imsvc${WIN_SDK}/cppwinrt"
 
 # No need to change what follows.
 
+# flags get run v8
+_NINJA = ${V8_OUT}/obj/v8_hello_world.ninja
+define strlen
+$(shell printf '%s' '$1' | wc -c)
+endef
+define get_def
+$(shell printf '%s' '$(strip $(shell cat ${_NINJA} | grep "$1 = "))' | cut -c $(call strlen,$1 = )- | sed 's/$$:/:/g')
+endef
+DEFINES=$(call get_def,defines)
+_INCLUDE_DIRS=$(call get_def,include_dirs)
+INCLUDE_DIRS=$(foreach dir,$(foreach dir,$(subst -I,${V8_OUT}/,${_INCLUDE_DIRS}),$(realpath $(dir))),-I$(dir))
+CFLAGS=$(call get_def,cflags)
+CFLAGS_CC=$(call get_def,cflags_cc)
+LIBS=$(call get_def,libs)
+
 # Base directories
-V8_DIR = v8
+V8_DIR = ${abspath v8}
 WASM_DIR = .
 EXAMPLE_DIR = example
 OUT_DIR = out
@@ -36,11 +63,12 @@ EXAMPLES = \
   global \
   memory \
   hostref \
-  finalize \
   multi \
-  #table \      # For some reason, this is currently broken in V8
-  #serialize \  # Also currently broken
-  #threads \    # Broken as well
+  table \
+  serialize \
+  threads \
+  finalize \
+
 
 # Wasm config
 WASM_INCLUDE = ${WASM_DIR}/include
@@ -56,11 +84,33 @@ WASM_V8_PATCH = wasm-v8-lowlevel
 V8_BUILD = ${V8_ARCH}.${V8_MODE}
 V8_V8 = ${V8_DIR}/v8
 V8_DEPOT_TOOLS = ${V8_DIR}/depot_tools
-V8_PATH = $(abspath ${V8_DEPOT_TOOLS}):${PATH}
+V8_PATH = "$(abspath ${V8_DEPOT_TOOLS}):${PATH}"
 V8_INCLUDE = ${V8_V8}/include
 V8_SRC = ${V8_V8}/src
 V8_OUT = ${V8_V8}/out.gn/${V8_BUILD}
 V8_LIBS = monolith # base libbase external_snapshot libplatform libsampler
+
+
+VCPKG=$(abspath ${VCPKG_ROOT})
+ifdef OS
+  IS_WIN = true
+  LIBS_EXT = lib
+  LIBS_PREFIX = 
+  EXEC_EXT = .exe
+# need by example/threads.c on Windows
+# https://learn.microsoft.com/en-us/vcpkg/get_started/get-started
+#    vcpkg install pthreads:x64-windows
+  PTHREAD_INCLUDE=${VCPKG}/packages/pthreads_x64-windows/include
+  PTHREAD_LIB=${VCPKG}/packages/pthreads_x64-windows/lib/pthreadVC3.lib
+else
+  ifeq ($(shell uname), Linux)
+    LIBS_EXT = a
+    LIBS_PREFIX = lib
+  endif
+  EXEC_EXT = 
+  PTHREAD_INCLUDE=
+  PTHREAD_LIB=
+endif
 V8_BLOBS = # natives_blob snapshot_blob
 V8_CURRENT = $(shell if [ -f ${V8_OUT}/version ]; then cat ${V8_OUT}/version; else echo ${V8_VERSION}; fi)
 
@@ -68,16 +118,20 @@ V8_GN_ARGS = \
   is_component_build=false \
   v8_static_library=true \
   v8_monolithic=true \
+  v8_enable_webassembly=true \
+  treat_warnings_as_errors=false \
   v8_use_external_startup_data=false \
   v8_enable_i18n_support=false \
   use_custom_libcxx=false \
-  use_custom_libcxx_for_host=false
+  use_custom_libcxx_for_host=false \
+  is_debug=true
 
 # Compiler config
 ifeq (${C_COMP},clang)
-  CC_COMP = clang++
+  CC_COMP = clang++${EXEC_EXT}
   LD_GROUP_START = 
   LD_GROUP_END = 
+  COMP_FLAGS = -pthread
 else ifeq (${C_COMP},gcc)
   CC_COMP = g++
   LD_GROUP_START = -Wl,--start-group
@@ -85,7 +139,6 @@ else ifeq (${C_COMP},gcc)
 else
   $(error C_COMP set to unknown compiler, must be clang or gcc)
 endif
-
 
 ###############################################################################
 # Examples
@@ -120,39 +173,101 @@ run-%-c: ${EXAMPLE_OUT}/%-c ${EXAMPLE_OUT}/%.wasm ${V8_BLOBS:%=${EXAMPLE_OUT}/%.
 	@echo ==== C ${@:run-%-c=%} ====; \
 	cd ${EXAMPLE_OUT}; ./${@:run-%=%}
 	@echo ==== Done ====
+	rm -f ${EXAMPLE_OUT}/${@:run-%=%}.pdb
 
-run-%-cc: ${EXAMPLE_OUT}/%-cc ${EXAMPLE_OUT}/%.wasm ${V8_BLOBS:%=${EXAMPLE_OUT}/%.bin}
+run-%-cc: ${EXAMPLE_OUT}/%-cc${EXEC_EXT} ${EXAMPLE_OUT}/%.wasm ${V8_BLOBS:%=${EXAMPLE_OUT}/%.bin}
 	@echo ==== C++ ${@:run-%-cc=%} ====; \
-	cd ${EXAMPLE_OUT}; ./${@:run-%=%}
+	cd ${EXAMPLE_OUT}; ./${@:run-%=%${EXEC_EXT}}
 	@echo ==== Done ====
+	rm -f ${EXAMPLE_OUT}/${@:run-%=%}${EXEC_EXT}.pdb
 
 # Compiling C / C++ example
 ${EXAMPLE_OUT}/%-c.o: ${EXAMPLE_DIR}/%.c ${WASM_INCLUDE}/wasm.h
 	mkdir -p ${EXAMPLE_OUT}
-	${C_COMP} -c ${C_FLAGS} -I. -I${V8_INCLUDE} -I${WASM_INCLUDE} $< -o $@
+	export MSYS2_ARG_CONV_EXCL=*; \
+	${CLANG_CL} \
+		/c $< \
+		/Fo$@ \
+		/nologo \
+		${WASM_FLAGS} \
+		${MSVC_INCLUDES} \
+		${DEFINES} \
+		-DWASM_API_DEBUG \
+		-D_ITERATOR_DEBUG_LEVEL=0 \
+		-I${WASM_INCLUDE} \
+		-I${V8_V8} \
+		-I${V8_OUT}/gen \
+		-I${V8_V8}/include \
+		-I${V8_V8}/third_party/abseil-cpp \
+		-I${V8_OUT}/gen/include \
+		-I${V8_V8}/third_party/fp16/src/include \
+		-I${PTHREAD_INCLUDE} \
+		${CFLAGS} \
+		${CFLAGS_CC} \
+		/Fd"$@.pdb" -v;
 
 ${EXAMPLE_OUT}/%-cc.o: ${EXAMPLE_DIR}/%.cc ${WASM_INCLUDE}/wasm.hh
 	mkdir -p ${EXAMPLE_OUT}
-	${CC_COMP} -c ${CC_FLAGS} -I. -I${V8_INCLUDE} -I${WASM_INCLUDE} $< -o $@
+	export MSYS2_ARG_CONV_EXCL=*; \
+	${CLANG_CL} \
+		/c $< \
+		/Fo$@ \
+		/nologo \
+		${WASM_FLAGS} \
+		${MSVC_INCLUDES} \
+		${DEFINES} \
+		-DWASM_API_DEBUG \
+		-D_ITERATOR_DEBUG_LEVEL=0 \
+		-I${WASM_INCLUDE} \
+		-I${V8_V8} \
+		-I${V8_OUT}/gen \
+		-I${V8_V8}/include \
+		-I${V8_V8}/third_party/abseil-cpp \
+		-I${V8_OUT}/gen/include \
+		-I${V8_V8}/third_party/fp16/src/include \
+		${CFLAGS} \
+		${CFLAGS_CC} \
+		/Fd"$@.pdb" -v;
 
 # Linking C / C++ example
 .PRECIOUS: ${EXAMPLES:%=${EXAMPLE_OUT}/%-c}
 ${EXAMPLE_OUT}/%-c: ${EXAMPLE_OUT}/%-c.o ${WASM_C_O}
-	${CC_COMP} ${CC_FLAGS} ${LD_FLAGS} $< -o $@ \
-		${WASM_C_O} \
-		${LD_GROUP_START} \
-		${V8_LIBS:%=${V8_OUT}/obj/libv8_%.a} \
-		${LD_GROUP_END} \
-		-ldl -pthread
+	export MSYS2_ARG_CONV_EXCL=*; \
+	${LLD_LINK} \
+	"/OUT:$@" \
+	/nologo \
+	-libpath:../../third_party/llvm-build/Release+Asserts/lib/clang/19/lib/windows \
+	"-libpath:${MSVC}/Tools/MSVC/14.39.33519/ATLMFC/lib/x64" \
+	"-libpath:${MSVC}/Tools/MSVC/14.39.33519/lib/x64" \
+	"-libpath:${WIN_SDK}/ucrt/x64" \
+	"-libpath:${WIN_SDK}/um/x64" \
+	/MACHINE:X64  \
+	"/PDB:$@.pdb" \
+	$< ${V8_OUT}/obj/v8_monolith.lib \
+	${WASM_C_O} \
+	${LIBS} \
+	${PTHREAD_LIB} \
+	/WX --color-diagnostics /call-graph-profile-sort:no /TIMESTAMP:1714885200 /lldignoreenv /pdbpagesize:16384 /DEBUG:GHASH /FIXED:NO /ignore:4199 /ignore:4221 /NXCOMPAT /DYNAMICBASE /INCREMENTAL /OPT:NOREF /OPT:NOICF /SUBSYSTEM:CONSOLE,10.0 /STACK:2097152 \
+	libcmtd.lib
 
-.PRECIOUS: ${EXAMPLES:%=${EXAMPLE_OUT}/%-cc}
-${EXAMPLE_OUT}/%-cc: ${EXAMPLE_OUT}/%-cc.o ${WASM_CC_O}
-	${CC_COMP} ${CC_FLAGS} ${LD_FLAGS} $< -o $@ \
-		${WASM_CC_O} \
-		${LD_GROUP_START} \
-		${V8_LIBS:%=${V8_OUT}/obj/libv8_%.a} \
-		${LD_GROUP_END} \
-		-ldl -pthread
+.PRECIOUS: ${EXAMPLES:%=${EXAMPLE_OUT}/%-cc${EXEC_EXT}}
+${EXAMPLE_OUT}/%-cc${EXEC_EXT}: ${EXAMPLE_OUT}/%-cc.o ${WASM_CC_O} ${V8_OUT}/obj/v8_monolith.lib
+	export MSYS2_ARG_CONV_EXCL=*; \
+	${LLD_LINK} \
+	"/OUT:$@" \
+	/nologo \
+	-libpath:../../third_party/llvm-build/Release+Asserts/lib/clang/19/lib/windows \
+	"-libpath:${MSVC}/Tools/MSVC/14.39.33519/ATLMFC/lib/x64" \
+	"-libpath:${MSVC}/Tools/MSVC/14.39.33519/lib/x64" \
+	"-libpath:${WIN_SDK}/ucrt/x64" \
+	"-libpath:${WIN_SDK}/um/x64" \
+	/MACHINE:X64  \
+	"/PDB:$@.pdb" \
+	${WASM_CC_O} \
+	$< ${V8_OUT}/obj/v8_monolith.lib \
+	advapi32.lib comdlg32.lib dbghelp.lib dnsapi.lib gdi32.lib msimg32.lib odbc32.lib odbccp32.lib oleaut32.lib shell32.lib shlwapi.lib user32.lib usp10.lib uuid.lib version.lib wininet.lib winmm.lib winspool.lib ws2_32.lib delayimp.lib kernel32.lib ole32.lib bcrypt.lib \
+	/WX --color-diagnostics /call-graph-profile-sort:no /TIMESTAMP:1714885200 /lldignoreenv /pdbpagesize:16384 /DEBUG:GHASH /FIXED:NO /ignore:4199 /ignore:4221 /NXCOMPAT /DYNAMICBASE /INCREMENTAL /OPT:NOREF /OPT:NOICF /SUBSYSTEM:CONSOLE,10.0 /STACK:2097152 \
+	libcmtd.lib
 
 # Installing V8 snapshots
 .PRECIOUS: ${V8_BLOBS:%=${EXAMPLE_OUT}/%.bin}
@@ -169,6 +284,10 @@ ${EXAMPLE_OUT}/%.wasm: ${EXAMPLE_DIR}/%.wasm
 %.wasm: %.wat
 	${WASM_INTERPRETER} -d $< -o $@
 
+${EXAMPLE_OUT}/threads-c:${EXAMPLE_OUT}/pthreadVC3.dll
+
+${EXAMPLE_OUT}/pthreadVC3.dll:
+	ln -s ${VCPKG}/packages/pthreads_x64-windows/bin/pthreadVC3.dll $@
 
 ###############################################################################
 # Wasm C / C++ API
@@ -185,7 +304,28 @@ wasm-cc: ${WASM_CC_LIBS:%=${WASM_OUT}/%.o}
 # Compiling
 ${WASM_OUT}/%.o: ${WASM_SRC}/%.cc ${WASM_INCLUDE}/wasm.h ${WASM_INCLUDE}/wasm.hh
 	mkdir -p ${WASM_OUT}
-	${CC_COMP} -c ${CC_FLAGS} -I. -I${V8_INCLUDE} -I${WASM_INCLUDE} -I${WASM_SRC} $< -o $@
+	export MSYS2_ARG_CONV_EXCL=*; \
+	${CLANG_CL} \
+		/c $< \
+		/Fo$@ \
+		/nologo \
+		${WASM_FLAGS} \
+		${MSVC_INCLUDES} \
+		${DEFINES} \
+		-DWASM_API_DEBUG \
+		-D_ITERATOR_DEBUG_LEVEL=0 \
+		-I${WASM_INCLUDE} \
+		-I${V8_V8} \
+		-I${V8_OUT}/gen \
+		-I${V8_V8}/include \
+		-I${V8_V8}/src \
+		-I${V8_V8}/third_party/abseil-cpp \
+		-I${V8_OUT}/gen/include \
+		-I${V8_V8}/third_party/fp16/src/include \
+		-I${WASM_SRC} \
+		${CFLAGS} \
+		${CFLAGS_CC} \
+		/Fd"$@.pdb" -v;
 
 # wasm-c.cc includes wasm-v8.cc, so set up a side dependency
 ${WASM_OUT}/wasm-c.o: ${WASM_SRC}/wasm-v8.cc
@@ -218,17 +358,18 @@ v8: ${V8_INCLUDE}/${WASM_V8_PATCH}.hh ${V8_SRC}/${WASM_V8_PATCH}.cc v8-patch v8-
 .PHONY: v8-build
 v8-build:
 	@echo ==== Building V8 ${V8_CURRENT} ${V8_BUILD} ====
-	(cd ${V8_V8}; PATH=${V8_PATH} tools/dev/v8gen.py -vv ${V8_BUILD} -- ${V8_GN_ARGS})
+	(cd ${V8_V8}; PATH=${V8_PATH} ${PYTHON3} tools/dev/v8gen.py -vv ${V8_BUILD} -- ${V8_GN_ARGS})
 	(cd ${V8_V8}; PATH=${V8_PATH} ninja -C out.gn/${V8_BUILD})
 	(cd ${V8_V8}; touch out.gn/${V8_BUILD}/args.gn)
 	(cd ${V8_V8}; PATH=${V8_PATH} ninja -C out.gn/${V8_BUILD})
 
+WASM_V8_PATCH_FILE = $(abspath ${WASM_DIR}/patch/0001-BUILD.gn-add-wasm-v8-lowlevel.patch)
 .PHONY: v8-patch
 v8-patch:
 	if ! grep ${WASM_V8_PATCH} ${V8_V8}/BUILD.gn; then \
 	  cp ${V8_V8}/BUILD.gn ${V8_V8}/BUILD.gn.save; \
 	  cd ${V8_V8}; \
-	  patch < ../../patch/0001-BUILD.gn-add-wasm-v8-lowlevel.patch; \
+	  patch < ${WASM_V8_PATCH_FILE}; \
 	fi
 
 .PHONY: v8-unpatch

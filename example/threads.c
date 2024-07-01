@@ -3,7 +3,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include <unistd.h>
+
+#if defined(WIN32)
+  #include <windows.h>
+#elif defined(__UNIX__)
+  #include <unistd.h>
+#else
+#endif
 
 #include "wasm.h"
 
@@ -26,6 +32,43 @@ typedef struct {
   int id;
 } thread_args;
 
+
+int millisleep(unsigned ms)
+{
+#if defined(WIN32)
+
+  SetLastError(0);
+  Sleep(ms);
+  return GetLastError() ?-1 :0;
+
+#elif _POSIX_C_SOURCE >= 199309L
+
+  /* prefer to use nanosleep() */
+
+  const struct timespec ts = {
+    ms / 1000, /* seconds */
+    (ms % 1000) * 1000 * 1000 /* nano seconds */
+  };
+
+  return nanosleep(&ts, NULL);
+
+#elif _BSD_SOURCE || \
+  (_XOPEN_SOURCE >= 500 || \
+     _XOPEN_SOURCE && _XOPEN_SOURCE_EXTENDED) && \
+  !(_POSIX_C_SOURCE >= 200809L || _XOPEN_SOURCE >= 700)
+
+  /* else fallback to obsolte usleep() */
+
+  return usleep(1000 * ms);
+
+#else
+
+# error ("No millisecond sleep available for this platform!")
+  return -1;
+
+#endif
+}
+
 void* run(void* args_abs) {
   thread_args* args = (thread_args*)args_abs;
 
@@ -35,7 +78,7 @@ void* run(void* args_abs) {
 
   // Run the example N times.
   for (int i = 0; i < N_REPS; ++i) {
-    usleep(100000);
+    millisleep(100);
 
     // Create imports.
     own wasm_functype_t* func_type = wasm_functype_new_1_0(wasm_valtype_new_i32());
@@ -135,7 +178,7 @@ int main(int argc, const char *argv[]) {
   // Spawn threads.
   pthread_t threads[N_THREADS];
   for (int i = 0; i < N_THREADS; i++) {
-    thread_args* args = malloc(sizeof(thread_args));
+    thread_args* args = (thread_args*)malloc(sizeof(thread_args));
     args->id = i;
     args->engine = engine;
     args->module = shared;

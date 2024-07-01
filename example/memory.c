@@ -32,7 +32,7 @@ void check(bool success) {
   }
 }
 
-void check_call(wasm_func_t* func, int i, wasm_val_t args[], int32_t expected) {
+void check_call(wasm_func_t* func, size_t i, wasm_val_t args[], int32_t expected) {
   wasm_val_t r = WASM_INIT_VAL;
   wasm_val_vec_t args_ = {i, args};
   wasm_val_vec_t results = {1, &r};
@@ -56,7 +56,7 @@ void check_call2(wasm_func_t* func, int32_t arg1, int32_t arg2, int32_t expected
   check_call(func, 2, args, expected);
 }
 
-void check_ok(wasm_func_t* func, int i, wasm_val_t args[]) {
+void check_ok(wasm_func_t* func, size_t i, wasm_val_t args[]) {
   wasm_val_vec_t args_ = {i, args};
   wasm_val_vec_t results = {0, NULL};
   if (wasm_func_call(func, &args_, &results)) {
@@ -70,7 +70,7 @@ void check_ok2(wasm_func_t* func, int32_t arg1, int32_t arg2) {
   check_ok(func, 2, args);
 }
 
-void check_trap(wasm_func_t* func, int i, wasm_val_t args[]) {
+void check_trap(wasm_func_t* func, size_t i, wasm_val_t args[]) {
   wasm_val_t r = WASM_INIT_VAL;
   wasm_val_vec_t args_ = {i, args};
   wasm_val_vec_t results = {1, &r};

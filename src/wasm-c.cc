@@ -29,7 +29,8 @@ struct borrowed_vec {
   struct wasm_##name##_t : Name {}; \
   \
   void wasm_##name##_delete(wasm_##name##_t* x) { \
-    delete x; \
+    destroyer d;\
+    d(x); \
   } \
   \
   extern "C++" inline auto hide_##name(Name* x) -> wasm_##name##_t* { \

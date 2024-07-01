@@ -12,11 +12,15 @@
 #include <string>
 
 #ifndef WASM_API_EXTERN
-#if defined(_WIN32) && !defined(__MINGW32__) && !defined(LIBWASM_STATIC)
-#define WASM_API_EXTERN __declspec(dllimport)
-#else
-#define WASM_API_EXTERN
-#endif
+#  if defined(_WIN32) && !defined(__MINGW32__) && !defined(LIBWASM_STATIC)
+#    ifdef WASM_API_EXPORTS
+#      define WASM_API_EXTERN __declspec(dllimport)
+#    else
+#      define WASM_API_EXTERN __declspec(dllexport)
+#    endif
+#  else
+#    define WASM_API_EXTERN
+#  endif
 #endif
 
 
@@ -223,7 +227,7 @@ class WASM_API_EXTERN Engine {
 
 protected:
   Engine() = default;
-  ~Engine() = default;
+  virtual ~Engine() = default;
 
 public:
   static auto make(own<Config>&& = Config::make()) -> own<Engine>;
@@ -238,7 +242,7 @@ class WASM_API_EXTERN Store {
 
 protected:
   Store() = default;
-  ~Store() = default;
+  virtual ~Store() = default;
 
 public:
   static auto make(Engine*) -> own<Store>;

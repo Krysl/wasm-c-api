@@ -4,6 +4,7 @@
 
 #include "v8.h"
 #include "libplatform/libplatform.h"
+#include "src/api/api-inl.h"
 
 #include <iostream>
 #include <type_traits>
@@ -23,6 +24,7 @@ namespace wasm {
 ///////////////////////////////////////////////////////////////////////////////
 // Auxiliaries
 
+#undef UNIMPLEMENTED
 [[noreturn]] void UNIMPLEMENTED(const char* s) {
   std::cerr << "Wasm API: " << s << " not supported yet!\n";
   exit(1);
@@ -296,6 +298,7 @@ enum v8_string_t {
   V8_S_EMPTY,
   V8_S_I32, V8_S_I64, V8_S_F32, V8_S_F64, V8_S_EXTERNREF, V8_S_FUNCREF,
   V8_S_VALUE, V8_S_MUTABLE, V8_S_ELEMENT, V8_S_MINIMUM, V8_S_MAXIMUM,
+  V8_S_ANYFUNC,
   V8_S_COUNT
 };
 
@@ -322,7 +325,7 @@ struct StoreImpl : Store {
   v8::Eternal<v8::Function> functions_[V8_F_COUNT];
   v8::Eternal<v8::Object> host_data_map_;
   v8::Eternal<v8::Symbol> callback_symbol_;
-  v8::Persistent<v8::Object>* handle_pool_ = nullptr;  // TODO: use v8::Value
+  std::stack<v8::Persistent<v8::Object>*> handle_pool_; 
 
   StoreImpl() {
     stats.make(Stats::STORE, this);
@@ -335,11 +338,10 @@ struct StoreImpl : Store {
 #endif
     {
       v8::HandleScope scope(isolate_);
-      while (handle_pool_ != nullptr) {
-        auto handle = handle_pool_;
-        handle_pool_ = reinterpret_cast<v8::Persistent<v8::Object>*>(
-          wasm_v8::foreign_get(handle->Get(isolate_)));
+      while (handle_pool_.empty()) {
+        auto handle = handle_pool_.top();
         delete handle;
+        handle_pool_.pop();
       }
     }
     context()->Exit();
@@ -376,26 +378,22 @@ struct StoreImpl : Store {
   }
 
   auto make_handle() -> v8::Persistent<v8::Object>* {
-    if (handle_pool_ == nullptr) {
+    if (handle_pool_.empty()) {
       static const size_t n = 100;
       for (size_t i = 0; i < n; ++i) {
-        auto v8_next = wasm_v8::foreign_new(isolate_, handle_pool_);
-        handle_pool_ = new(std::nothrow) v8::Persistent<v8::Object>();
-        if (!handle_pool_) return nullptr;
-        handle_pool_->Reset(isolate_, v8::Local<v8::Object>::Cast(v8_next));
+        auto handle = new(std::nothrow) v8::Persistent<v8::Object>();
+        if (!handle) return nullptr;
+        handle_pool_.push(handle);
       }
     }
-    auto handle = handle_pool_;
-    handle_pool_ = reinterpret_cast<v8::Persistent<v8::Object>*>(
-      wasm_v8::foreign_get(handle->Get(isolate_)));
+    auto handle = handle_pool_.top();
+    handle_pool_.pop();
     return handle;
   }
 
   void free_handle(v8::Persistent<v8::Object>* handle) {
     // TODO: shrink pool?
-    auto next = wasm_v8::foreign_new(isolate_, handle_pool_);
-    handle->Reset(isolate_, v8::Local<v8::Object>::Cast(next));
-    handle_pool_ = handle;
+    handle->Reset(isolate_, v8::Local<v8::Object>());
   }
 };
 
@@ -433,6 +431,7 @@ auto Store::make(Engine*) -> own<Store> {
       "",
       "i32", "i64", "f32", "f64", "externref", "funcref",
       "value", "mutable", "element", "initial", "maximum",
+      "anyfunc"
     };
     for (int i = 0; i < V8_S_COUNT; ++i) {
       auto maybe = v8::String::NewFromUtf8(isolate, raw_strings[i],
@@ -505,7 +504,7 @@ auto Store::make(Engine*) -> own<Store> {
   isolate->SetData(0, store.get());
 
   return store;
-};
+}
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -933,7 +932,7 @@ auto ExportType::type() const -> const ExternType* {
 
 auto valtype_to_v8(
   StoreImpl* store, const ValType* type
-) -> v8::Local<v8::Value> {
+) -> v8::Local<v8::String> {
   v8_string_t string;
   switch (type->kind()) {
     case ValKind::I32: string = V8_S_I32; break;
@@ -941,7 +940,7 @@ auto valtype_to_v8(
     case ValKind::F32: string = V8_S_F32; break;
     case ValKind::F64: string = V8_S_F64; break;
     case ValKind::EXTERNREF: string = V8_S_EXTERNREF; break;
-    case ValKind::FUNCREF: string = V8_S_FUNCREF; break;
+    case ValKind::FUNCREF: string = V8_S_ANYFUNC; break; // use `anyfunc` instead of `funcref` for JS API
     default:
       // TODO(wasm+): support new value types
       assert(false);
@@ -1417,6 +1416,7 @@ auto Module::exports() const -> ownvec<ExportType> {
 auto Module::serialize() const -> vec<byte_t> {
   v8::HandleScope handle_scope(impl(this)->isolate());
   auto module = impl(this)->v8_object();
+  wasm_v8::module_compile(module);
   auto binary_size = wasm_v8::module_binary_size(module);
   auto serial_size = wasm_v8::module_serialize_size(module);
   auto size_size = wasm::bin::u64_size(binary_size);
@@ -1731,7 +1731,7 @@ auto Func::call(const vec<Val>& args, vec<Val>& results) const -> own<Trap> {
     new (&results[0]) Val(v8_to_val(store, val, result_types[0].get()));
   } else {
     assert(val->IsArray());
-    auto array = v8::Handle<v8::Array>::Cast(val);
+    auto array = v8::Local<v8::Array>::Cast(val);
     for (size_t i = 0; i < result_types.size(); ++i) {
       auto maybe = array->Get(context, i);
       assert(!maybe.IsEmpty());
@@ -1743,7 +1743,7 @@ auto Func::call(const vec<Val>& args, vec<Val>& results) const -> own<Trap> {
 }
 
 void FuncData::v8_callback(const v8::FunctionCallbackInfo<v8::Value>& info) {
-  auto v8_data = v8::Local<v8::Object>::Cast(info.Data());
+  auto v8_data = info.Data();
   auto self = reinterpret_cast<FuncData*>(wasm_v8::foreign_get(v8_data));
   auto store = impl(self->store);
   auto isolate = store->isolate();
@@ -2073,7 +2073,7 @@ auto Instance::make(
   v8::TryCatch handler(isolate);
   v8::Local<v8::Value> instantiate_args[] = {module->v8_object(), imports_obj};
   auto obj = store->v8_function(V8_F_INSTANCE)->NewInstance(
-    context, 2, instantiate_args).ToLocalChecked();
+    context, 2, instantiate_args);
 
   if (handler.HasCaught() && trap) {
     auto exception = handler.Exception();
@@ -2087,7 +2087,7 @@ auto Instance::make(
     return nullptr;
   }
 
-  return RefImpl<Instance>::make(store, obj);
+  return RefImpl<Instance>::make(store, obj.ToLocalChecked());
 }
 
 auto Instance::exports() const -> ownvec<Extern> {
